@@ -72,6 +72,7 @@ COMPLETED_TORRENTS = load_completed_torrents()
 # }
 FILE_SELECTIONS = {}
 FILE_PROGRESS_TASKS = {}
+LIST_REFRESH_TASKS = {}
 SCREEN_STATES = {}
 TELEGRAM_APPLICATION = None
 
@@ -524,11 +525,16 @@ async def wait_for_metadata_and_show_files(chat_id, torrent_hash):
                     )
 
                     status_text, torrents = await build_torrent_status(qb)
-                    await TELEGRAM_APPLICATION.bot.send_message(
+                    list_message = await TELEGRAM_APPLICATION.bot.send_message(
                         chat_id=chat_id,
                         text=status_text,
                         reply_markup=list_keyboard(torrents),
                         parse_mode="HTML",
+                    )
+                    start_torrent_list_refresh(
+                        TELEGRAM_APPLICATION,
+                        chat_id,
+                        list_message.message_id,
                     )
 
                     print(
@@ -946,6 +952,71 @@ def list_keyboard(torrents):
     return InlineKeyboardMarkup(keyboard)
 
 
+async def refresh_torrent_list_message(
+    application,
+    chat_id,
+    message_id,
+):
+    key = f"{chat_id}:{message_id}"
+
+    print(
+        f"🔄 Torrent list refresh started: message={message_id}"
+    )
+
+    try:
+        while True:
+            await asyncio.sleep(5)
+
+            if SCREEN_STATES.get(key) != "list":
+                return
+
+            if LIST_REFRESH_TASKS.get(key) is not asyncio.current_task():
+                return
+
+            try:
+                qb = get_qbittorrent()
+                status_text, torrents = await build_torrent_status(qb)
+
+                if SCREEN_STATES.get(key) != "list":
+                    return
+
+                await application.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=status_text,
+                    parse_mode="HTML",
+                    reply_markup=list_keyboard(torrents),
+                )
+
+            except Exception as error:
+                if "Message is not modified" not in str(error):
+                    print(f"⚠️ Torrent list refresh error: {error}")
+
+    except asyncio.CancelledError:
+        raise
+
+    finally:
+        if LIST_REFRESH_TASKS.get(key) is asyncio.current_task():
+            LIST_REFRESH_TASKS.pop(key, None)
+
+
+def start_torrent_list_refresh(application, chat_id, message_id):
+    key = f"{chat_id}:{message_id}"
+    old_task = LIST_REFRESH_TASKS.pop(key, None)
+
+    if old_task is not None:
+        old_task.cancel()
+
+    SCREEN_STATES[key] = "list"
+    LIST_REFRESH_TASKS[key] = asyncio.create_task(
+        refresh_torrent_list_message(
+            application,
+            chat_id,
+            message_id,
+        )
+    )
+
+
 
 
 async def list_torrents(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -961,8 +1032,11 @@ async def list_torrents(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
 
-        # Run auto-refresh separately so Telegram button callbacks
-        # are processed immediately.
+        start_torrent_list_refresh(
+            context.application,
+            message.chat_id,
+            message.message_id,
+        )
 
     except Exception as e:
         print(f"List error: {e}")
@@ -1472,6 +1546,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Main menu buttons
     if query.data.startswith("menu_"):
         action = query.data
+        screen_key = f"{query.message.chat_id}:{query.message.message_id}"
+
+        if action != "menu_list":
+            SCREEN_STATES[screen_key] = "menu"
 
         if action == "menu_home":
             await query.edit_message_text(
@@ -1492,7 +1570,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=list_keyboard(torrents),
             )
 
-            # Continue refreshing this message in the background.
+            start_torrent_list_refresh(
+                context.application,
+                query.message.chat_id,
+                query.message.message_id,
+            )
             return
 
         if action == "menu_space":
