@@ -342,7 +342,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def file_selection_keyboard(torrent_hash, files, selected):
     keyboard = []
 
-    for file in files:
+    sorted_files = sorted(
+        files,
+        key=lambda file: Path(
+            str(getattr(file, "name", ""))
+        ).name.lower(),
+    )
+
+    for file in sorted_files:
         index = int(getattr(file, "index", 0))
         name = str(getattr(file, "name", f"File {index}"))
         display_name = Path(name).name
@@ -786,6 +793,12 @@ async def build_file_progress(qb, torrent_hash):
 
     selected_count = 0
     completed_count = 0
+
+    selected_files.sort(
+        key=lambda file: Path(
+            str(getattr(file, "name", ""))
+        ).name.lower()
+    )
 
     for file in selected_files:
         name = str(getattr(file, "name", "Unknown file"))
