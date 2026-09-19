@@ -515,6 +515,8 @@ async def wait_for_metadata_and_show_files(
                         priority=1,
                     )
                     qb.torrents_start(torrent_hashes=torrent_hash)
+                    COMPLETED_TORRENTS.discard(torrent_hash)
+                    save_completed_torrents(COMPLETED_TORRENTS)
 
                     await TELEGRAM_APPLICATION.bot.send_message(
                         chat_id=chat_id,
@@ -1514,6 +1516,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             qb.torrents_start(
                 torrent_hashes=torrent_hash
             )
+            COMPLETED_TORRENTS.discard(torrent_hash)
+            save_completed_torrents(COMPLETED_TORRENTS)
             print("✅ Torrent start command sent")
 
             torrent = get_torrent(qb, torrent_hash)
