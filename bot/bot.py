@@ -970,7 +970,7 @@ async def refresh_torrent_list_message(
 
     try:
         while True:
-            await asyncio.sleep(5)
+            await asyncio.sleep(1)
 
             if SCREEN_STATES.get(key) != "list":
                 return
