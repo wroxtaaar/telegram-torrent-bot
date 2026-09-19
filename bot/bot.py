@@ -522,6 +522,15 @@ async def wait_for_metadata_and_show_files(chat_id, torrent_hash):
                         ),
                         parse_mode="HTML",
                     )
+
+                    status_text, torrents = await build_torrent_status(qb)
+                    await TELEGRAM_APPLICATION.bot.send_message(
+                        chat_id=chat_id,
+                        text=status_text,
+                        reply_markup=list_keyboard(torrents),
+                        parse_mode="HTML",
+                    )
+
                     print(
                         f"▶️ Single-file download started: "
                         f"{torrent.name}"
