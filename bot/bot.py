@@ -1496,11 +1496,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await query.answer("▶️ Download started!")
 
+            status_text, torrents = await build_torrent_status(qb)
             await query.edit_message_text(
-                "▶️ <b>Download started!</b>\n\n"
-                f"📁 Selected files: {len(selected_indexes)}\n"
-                f"📦 Torrent: {torrent.name if torrent else torrent_hash}",
+                status_text,
                 parse_mode="HTML",
+                reply_markup=list_keyboard(torrents),
+            )
+            start_torrent_list_refresh(
+                context.application,
+                query.message.chat_id,
+                query.message.message_id,
             )
 
         except Exception as e:
