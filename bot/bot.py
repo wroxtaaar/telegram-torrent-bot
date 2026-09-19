@@ -73,6 +73,7 @@ COMPLETED_TORRENTS = load_completed_torrents()
 FILE_SELECTIONS = {}
 FILE_PROGRESS_TASKS = {}
 LIST_REFRESH_TASKS = {}
+COMPLETED_LIST_KEYS = set()
 SCREEN_STATES = {}
 TELEGRAM_APPLICATION = None
 
@@ -538,6 +539,7 @@ async def wait_for_metadata_and_show_files(
                         TELEGRAM_APPLICATION,
                         chat_id,
                         list_message.message_id,
+                        allow_completed=True,
                     )
 
                     print(
@@ -1020,7 +1022,12 @@ async def refresh_torrent_list_message(
             LIST_REFRESH_TASKS.pop(key, None)
 
 
-def start_torrent_list_refresh(application, chat_id, message_id):
+def start_torrent_list_refresh(
+    application,
+    chat_id,
+    message_id,
+    allow_completed=False,
+):
     key = f"{chat_id}:{message_id}"
     old_task = LIST_REFRESH_TASKS.pop(key, None)
 
@@ -1028,6 +1035,13 @@ def start_torrent_list_refresh(application, chat_id, message_id):
         old_task.cancel()
 
     SCREEN_STATES[key] = "list"
+
+    if key in COMPLETED_LIST_KEYS and not allow_completed:
+        return
+
+    if allow_completed:
+        COMPLETED_LIST_KEYS.discard(key)
+
     LIST_REFRESH_TASKS[key] = asyncio.create_task(
         refresh_torrent_list_message(
             application,
@@ -1040,6 +1054,7 @@ def start_torrent_list_refresh(application, chat_id, message_id):
 def stop_torrent_list_refreshes():
     for key, task in list(LIST_REFRESH_TASKS.items()):
         SCREEN_STATES[key] = "completed"
+        COMPLETED_LIST_KEYS.add(key)
         task.cancel()
 
     LIST_REFRESH_TASKS.clear()
@@ -1542,6 +1557,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.application,
                 query.message.chat_id,
                 query.message.message_id,
+                allow_completed=True,
             )
 
         except Exception as e:
