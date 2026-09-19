@@ -765,6 +765,19 @@ async def build_file_progress(qb, torrent_hash):
             "⏳ File information is not available yet."
         )
 
+    selected_files = [
+        file
+        for file in files
+        if int(getattr(file, "priority", 0) or 0) > 0
+    ]
+
+    if not selected_files:
+        return (
+            f"📊 <b>File Progress</b>\n"
+            f"📦 <b>{torrent.name}</b>\n\n"
+            "⏭️ No files are currently selected for download."
+        )
+
     lines = [
         f"📊 <b>File Progress</b>",
         f"📦 <b>{torrent.name}</b>",
@@ -774,7 +787,7 @@ async def build_file_progress(qb, torrent_hash):
     selected_count = 0
     completed_count = 0
 
-    for file in files:
+    for file in selected_files:
         name = str(getattr(file, "name", "Unknown file"))
         progress = float(getattr(file, "progress", 0) or 0)
         size = int(getattr(file, "size", 0) or 0)
@@ -785,8 +798,6 @@ async def build_file_progress(qb, torrent_hash):
         if progress >= 0.999999:
             icon = "✅"
             completed_count += 1
-        elif priority == 0:
-            icon = "⏭️"
         elif progress > 0:
             icon = "⬇️"
             selected_count += 1
@@ -809,7 +820,7 @@ async def build_file_progress(qb, torrent_hash):
 
     lines.extend([
         "",
-        f"📁 Files: <b>{len(files)}</b>",
+        f"📁 Files: <b>{len(selected_files)}</b>",
         f"✅ Completed: <b>{completed_count}</b>",
     ])
 
