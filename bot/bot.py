@@ -685,7 +685,7 @@ async def refresh_file_progress_message(
 
     try:
         while True:
-            await asyncio.sleep(5)
+            await asyncio.sleep(1)
 
             # ------------------------------------------------
             # HARD SCREEN GUARD
