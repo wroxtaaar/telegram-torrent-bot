@@ -30,7 +30,9 @@ QBIT_PASSWORD = os.environ["QBITTORRENT_PASSWORD"]
 
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:8080").rstrip("/")
 
-DOWNLOAD_DIR = Path(__file__).resolve().parent.parent / "downloads"
+DOWNLOAD_DIR = Path(
+    os.environ.get("DOWNLOAD_DIR", "/downloads")
+).resolve()
 
 # Temporary in-memory link tokens.
 # They disappear if the bot restarts.
