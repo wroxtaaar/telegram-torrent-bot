@@ -23,14 +23,14 @@ load_dotenv()
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 ALLOWED_USER_ID = int(os.environ["TELEGRAM_USER_ID"])
 
-QBIT_HOST = "qbittorrent"
-QBIT_PORT = 8080
+QBIT_HOST = os.environ.get("QBIT_HOST", "qbittorrent")
+QBIT_PORT = int(os.environ.get("QBIT_PORT", "8080"))
 QBIT_USERNAME = os.environ["QBITTORRENT_USERNAME"]
 QBIT_PASSWORD = os.environ["QBITTORRENT_PASSWORD"]
 
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:8080").rstrip("/")
 
-DOWNLOAD_DIR = Path("/downloads")
+DOWNLOAD_DIR = Path(__file__).resolve().parent.parent / "downloads"
 
 # Temporary in-memory link tokens.
 # They disappear if the bot restarts.
@@ -293,7 +293,7 @@ async def add_magnet_link(update: Update, magnet: str):
         # metadata is received.
         result = qb.torrents_add(
             urls=magnet,
-            save_path="/downloads",
+            save_path=str(DOWNLOAD_DIR),
             stop_condition="MetadataReceived",
         )
 

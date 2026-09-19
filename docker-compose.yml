@@ -5,6 +5,10 @@ services:
     container_name: torrent-qbittorrent
     restart: unless-stopped
 
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+
     environment:
       - PUID=1000
       - PGID=1000
@@ -23,6 +27,10 @@ services:
     build: .
     container_name: telegram-torrent-bot
     restart: unless-stopped
+
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
 
     env_file:
       - .env

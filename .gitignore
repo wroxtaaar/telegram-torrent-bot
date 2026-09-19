@@ -7,5 +7,6 @@ downloads/*
 !downloads/.gitkeep
 
 qbittorrent/
+qbittorrent-config/
 .vscode/
 .idea/
