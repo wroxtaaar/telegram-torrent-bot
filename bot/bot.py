@@ -302,7 +302,7 @@ async def add_magnet_link(update: Update, magnet: str):
 
         print(f"Magnet add result: {result}")
 
-        await update.message.reply_text(
+        notification = await update.message.reply_text(
             "🚀 <b>Magnet detected!</b>\n\n"
             "📡 Getting torrent metadata...\n"
             "⏳ Single-file torrents will start automatically.\n\n"
@@ -315,6 +315,7 @@ async def add_magnet_link(update: Update, magnet: str):
             wait_for_metadata_and_show_files(
                 update.effective_chat.id,
                 torrent_hash,
+                notification.message_id,
             )
         )
 
@@ -461,7 +462,11 @@ async def show_file_selector(message, qb, torrent_hash):
     return True
 
 
-async def wait_for_metadata_and_show_files(chat_id, torrent_hash):
+async def wait_for_metadata_and_show_files(
+    chat_id,
+    torrent_hash,
+    notification_message_id,
+):
     """
     Wait for qBittorrent to obtain magnet metadata, then show
     the file-selection UI.
@@ -514,12 +519,12 @@ async def wait_for_metadata_and_show_files(chat_id, torrent_hash):
                     )
                     qb.torrents_start(torrent_hashes=torrent_hash)
 
-                    await TELEGRAM_APPLICATION.bot.send_message(
+                    await TELEGRAM_APPLICATION.bot.edit_message_text(
                         chat_id=chat_id,
+                        message_id=notification_message_id,
                         text=(
-                            "▶️ <b>Download started automatically!</b>\n\n"
-                            f"📄 {getattr(files[0], 'name', torrent.name)}\n"
-                            f"📦 {torrent.name}"
+                            "🚀 <b>Magnet detected!</b>\n\n"
+                            "▶️ <b>Starting download...</b>"
                         ),
                         parse_mode="HTML",
                     )
