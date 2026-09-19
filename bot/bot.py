@@ -1035,6 +1035,14 @@ def start_torrent_list_refresh(application, chat_id, message_id):
     )
 
 
+def stop_torrent_list_refreshes():
+    for key, task in list(LIST_REFRESH_TASKS.items()):
+        SCREEN_STATES[key] = "completed"
+        task.cancel()
+
+    LIST_REFRESH_TASKS.clear()
+
+
 
 
 async def list_torrents(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1968,6 +1976,7 @@ async def completion_watcher(application):
                     continue
 
                 print(f"🎉 Torrent completed: {torrent.name}")
+                stop_torrent_list_refreshes()
 
                 try:
                     files = qb.torrents_files(torrent_hash=torrent_hash)
@@ -1981,6 +1990,9 @@ async def completion_watcher(application):
                     links = []
 
                     for file in files:
+                        if int(getattr(file, "priority", 0) or 0) <= 0:
+                            continue
+
                         file_name = getattr(file, "name", None)
 
                         if not file_name:
