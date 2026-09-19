@@ -304,8 +304,8 @@ async def add_magnet_link(update: Update, magnet: str):
         await update.message.reply_text(
             "🚀 <b>Magnet detected!</b>\n\n"
             "📡 Getting torrent metadata...\n"
-            "⏳ Download will NOT start yet.\n\n"
-            "Once metadata is received, I'll show you the files "
+            "⏳ Single-file torrents will start automatically.\n\n"
+            "For multi-file torrents, I'll show you the files "
             "so you can choose what to download.",
             parse_mode="HTML",
         )
@@ -503,6 +503,30 @@ async def wait_for_metadata_and_show_files(chat_id, torrent_hash):
                         f"(attempt {attempt + 1}/60)"
                     )
                     continue
+
+                if len(files) == 1:
+                    file_index = int(getattr(files[0], "index", 0))
+                    qb.torrents_file_priority(
+                        torrent_hash=torrent_hash,
+                        file_ids=[file_index],
+                        priority=1,
+                    )
+                    qb.torrents_start(torrent_hashes=torrent_hash)
+
+                    await TELEGRAM_APPLICATION.bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            "▶️ <b>Download started automatically!</b>\n\n"
+                            f"📄 {getattr(files[0], 'name', torrent.name)}\n"
+                            f"📦 {torrent.name}"
+                        ),
+                        parse_mode="HTML",
+                    )
+                    print(
+                        f"▶️ Single-file download started: "
+                        f"{torrent.name}"
+                    )
+                    return
 
                 selected = {
                     int(getattr(file, "index", 0))
