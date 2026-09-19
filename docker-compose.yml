@@ -1,0 +1,37 @@
+services:
+
+  qbittorrent:
+    image: linuxserver/qbittorrent:latest
+    container_name: torrent-qbittorrent
+    restart: unless-stopped
+
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Kolkata
+      - WEBUI_PORT=8080
+
+    volumes:
+      - ./qbittorrent/config:/config
+      - ./downloads:/downloads
+
+    ports:
+      - "6881:6881"
+      - "6881:6881/udp"
+
+  bot:
+    build: .
+    container_name: telegram-torrent-bot
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    volumes:
+      - ./downloads:/downloads
+
+    depends_on:
+      - qbittorrent
+
+    ports:
+      - "8080:8080"
