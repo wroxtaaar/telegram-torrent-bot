@@ -344,7 +344,8 @@ def file_selection_keyboard(torrent_hash, files, selected):
 
     for file in files:
         index = int(getattr(file, "index", 0))
-        name = getattr(file, "name", f"File {index}")
+        name = str(getattr(file, "name", f"File {index}"))
+        display_name = Path(name).name
         size = getattr(file, "size", 0)
 
         checked = "☑️" if index in selected else "☐"
@@ -352,7 +353,7 @@ def file_selection_keyboard(torrent_hash, files, selected):
         # Keep callback data short enough for Telegram.
         keyboard.append([
             InlineKeyboardButton(
-                f"{checked} {name[:35]} ({format_size(size)})",
+                f"{checked} {display_name[:55]} ({format_size(size)})",
                 callback_data=f"filetoggle:{torrent_hash}:{index}",
             )
         ])
