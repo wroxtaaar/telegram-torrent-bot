@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: telegram-torrent-bot
+    runtime: docker
+    plan: free
+    branch: stable
+    dockerfilePath: ./Dockerfile.render
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_USER_ID
+        sync: false
+      - key: QBITTORRENT_USERNAME
+        value: ""
+      - key: QBITTORRENT_PASSWORD
+        value: ""
+      - key: QBIT_AUTH_ENABLED
+        value: "false"
+      - key: QBIT_HOST
+        value: "127.0.0.1"
+      - key: QBIT_PORT
+        value: "8080"
+      - key: DOWNLOAD_DIR
+        value: "/downloads"
