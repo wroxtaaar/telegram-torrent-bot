@@ -3,7 +3,7 @@ services:
     name: telegram-torrent-bot
     runtime: docker
     plan: free
-    branch: stable
+    branch: main
     dockerfilePath: ./Dockerfile.render
     healthCheckPath: /health
     autoDeploy: true
