@@ -51,10 +51,15 @@ ALLOWED_USER_ID = int(os.environ["TELEGRAM_USER_ID"])
 
 QBIT_HOST = os.environ.get("QBIT_HOST", "qbittorrent")
 QBIT_PORT = int(os.environ.get("QBIT_PORT", "8080"))
-QBIT_USERNAME = os.environ["QBITTORRENT_USERNAME"]
-QBIT_PASSWORD = os.environ["QBITTORRENT_PASSWORD"]
+QBIT_USERNAME = os.environ.get("QBITTORRENT_USERNAME", "")
+QBIT_PASSWORD = os.environ.get("QBITTORRENT_PASSWORD", "")
+QBIT_AUTH_ENABLED = os.environ.get("QBIT_AUTH_ENABLED", "true").lower() in ("1", "true", "yes")
 
-BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:8080").rstrip("/")
+BASE_URL = os.environ.get("BASE_URL") or os.environ.get(
+    "RENDER_EXTERNAL_URL",
+    "http://127.0.0.1:8080",
+)
+BASE_URL = BASE_URL.rstrip("/")
 
 DOWNLOAD_DIR = Path(
     os.environ.get("DOWNLOAD_DIR", "/downloads")
@@ -181,7 +186,8 @@ def get_qbittorrent():
         password=QBIT_PASSWORD,
     )
 
-    client.auth_log_in()
+    if QBIT_AUTH_ENABLED:
+        client.auth_log_in()
     return client
 
 
