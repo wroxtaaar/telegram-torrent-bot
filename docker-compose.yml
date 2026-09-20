@@ -29,15 +29,14 @@ services:
     container_name: telegram-torrent-bot
     restart: unless-stopped
 
-    network_mode: host
-
     dns:
       - 1.1.1.1
       - 8.8.8.8
 
     environment:
-      - QBIT_HOST=127.0.0.1
-      - QBIT_PORT=8081
+      - QBIT_HOST=qbittorrent
+      - QBIT_PORT=8080
+      - DOWNLOAD_DIR=/downloads
 
     env_file:
       - .env

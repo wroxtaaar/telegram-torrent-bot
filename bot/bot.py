@@ -9,6 +9,32 @@ from urllib.parse import quote, urlparse, parse_qs
 from dotenv import load_dotenv
 from qbittorrentapi import Client
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import RetryAfter
+
+import time
+
+# Global Telegram flood protection.
+# When Telegram returns RetryAfter, background refresh tasks
+# immediately stop instead of continuing to hammer Telegram.
+TELEGRAM_RATE_LIMITED_UNTIL = 0.0
+
+
+def telegram_rate_limited():
+    return time.monotonic() < TELEGRAM_RATE_LIMITED_UNTIL
+
+
+def set_telegram_rate_limit(retry_after):
+    global TELEGRAM_RATE_LIMITED_UNTIL
+
+    TELEGRAM_RATE_LIMITED_UNTIL = (
+        time.monotonic() + float(retry_after)
+    )
+
+    print(
+        f"🛑 Global Telegram flood protection enabled "
+        f"for {retry_after}s"
+    )
+
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -62,6 +88,12 @@ def save_completed_torrents(completed):
 
 
 COMPLETED_TORRENTS = load_completed_torrents()
+
+# Torrents currently being processed by the completion watcher.
+# Prevents the same completed torrent from being handled again
+# every watcher cycle if link generation or Telegram sending fails.
+COMPLETION_PROCESSING = set()
+
 
 # Temporary file-selection state:
 # {
@@ -519,14 +551,32 @@ async def wait_for_metadata_and_show_files(
                     COMPLETED_TORRENTS.discard(torrent_hash)
                     save_completed_torrents(COMPLETED_TORRENTS)
 
-                    await TELEGRAM_APPLICATION.bot.send_message(
-                        chat_id=chat_id,
-                        text=(
-                            "🚀 <b>Magnet detected!</b>\n\n"
-                            "▶️ <b>Starting download...</b>"
-                        ),
-                        parse_mode="HTML",
-                    )
+                    if telegram_rate_limited():
+                        print(
+                            "🛑 Metadata watcher stopped because "
+                            "Telegram is currently rate-limited."
+                        )
+                        return
+
+                    try:
+                        await TELEGRAM_APPLICATION.bot.send_message(
+                            chat_id=chat_id,
+                            text=(
+                                "🚀 <b>Magnet detected!</b>\n\n"
+                                "▶️ <b>Starting download...</b>"
+                            ),
+                            parse_mode="HTML",
+                        )
+                    except RetryAfter as e:
+                        set_telegram_rate_limit(e.retry_after)
+
+                        print(
+                            f"🛑 Telegram flood control while "
+                            f"sending magnet notification: "
+                            f"retry after {e.retry_after}s."
+                        )
+
+                        return
 
                     status_text, torrents = await build_torrent_status(qb)
                     list_message = await TELEGRAM_APPLICATION.bot.send_message(
@@ -558,13 +608,31 @@ async def wait_for_metadata_and_show_files(
                     "selected": selected,
                 }
 
-                await application_bot_send_file_selector(
-                    chat_id,
-                    torrent,
-                    files,
-                    selected,
-                    torrent_hash,
-                )
+                if telegram_rate_limited():
+                    print(
+                        "🛑 File selector blocked because "
+                        "Telegram is currently rate-limited."
+                    )
+                    return
+
+                try:
+                    await application_bot_send_file_selector(
+                        chat_id,
+                        torrent,
+                        files,
+                        selected,
+                        torrent_hash,
+                    )
+                except RetryAfter as e:
+                    set_telegram_rate_limit(e.retry_after)
+
+                    print(
+                        f"🛑 Telegram flood control while "
+                        f"sending file selector: "
+                        f"retry after {e.retry_after}s."
+                    )
+
+                    return
 
                 print(
                     f"📁 File selector sent: "
@@ -574,11 +642,25 @@ async def wait_for_metadata_and_show_files(
 
                 return
 
+            except RetryAfter as e:
+                set_telegram_rate_limit(e.retry_after)
+
+                print(
+                    f"🛑 Metadata watcher hit Telegram flood control: "
+                    f"retry after {e.retry_after}s. "
+                    f"Stopping metadata watcher."
+                )
+
+                return
+
             except Exception as e:
                 print(
                     f"Metadata wait error "
                     f"(attempt {attempt + 1}/60): {e}"
                 )
+
+                # Prevent rapid retry loops after unexpected errors.
+                await asyncio.sleep(2)
 
         print(
             f"⏰ Metadata timeout: {torrent_hash}"
@@ -666,30 +748,19 @@ async def refresh_file_progress_message(
     message_id,
     torrent_hash,
 ):
-    """
-    Auto-refresh File Progress.
-
-    IMPORTANT:
-    This task is allowed to edit the Telegram message only while
-    SCREEN_STATES[key] == "file_progress".
-
-    If the user returns to the torrent list, the task immediately
-    stops being allowed to edit that message.
-    """
     key = f"{chat_id}:{message_id}"
 
     print(
         f"🔄 File Progress refresh started: "
-        f"message={message_id}, torrent={torrent_hash}"
+        f"message={message_id}"
     )
+
+    last_text = None
+    last_keyboard = None
 
     try:
         while True:
-            await asyncio.sleep(1)
 
-            # ------------------------------------------------
-            # HARD SCREEN GUARD
-            # ------------------------------------------------
             if SCREEN_STATES.get(key) != "file_progress":
                 print(
                     f"🛑 File Progress refresh blocked: "
@@ -702,14 +773,28 @@ async def refresh_file_progress_message(
 
             if current_task is not asyncio.current_task():
                 print(
-                    f"🛑 Old File Progress task stopped: "
+                    f"🛑 File Progress refresh stopped: "
                     f"message={message_id}"
                 )
                 return
 
+            if telegram_rate_limited():
+                print(
+                    f"🛑 File Progress refresh blocked by "
+                    f"global Telegram flood protection: "
+                    f"message={message_id}"
+                )
+                return
+
+            refresh_interval = 2
+
             try:
                 qb = get_qbittorrent()
-                torrent = get_torrent(qb, torrent_hash)
+
+                torrent = get_torrent(
+                    qb,
+                    torrent_hash,
+                )
 
                 if not torrent:
                     return
@@ -719,48 +804,116 @@ async def refresh_file_progress_message(
                     torrent_hash,
                 )
 
-                keyboard = InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton(
-                            "🔄 Refresh",
-                            callback_data=f"files:{torrent_hash}",
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "⬅️ Back to List",
-                            callback_data="menu_list",
-                        )
-                    ],
-                ])
-
-                # Check AGAIN immediately before editing.
                 if SCREEN_STATES.get(key) != "file_progress":
                     return
 
-                await application.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    text=text,
-                    parse_mode="HTML",
-                    reply_markup=keyboard,
+                state = getattr(
+                    torrent,
+                    "state",
+                    "",
                 )
 
-            except Exception as e:
-                print(
-                    f"⚠️ File Progress refresh error: {e}"
+                progress = getattr(
+                    torrent,
+                    "progress",
+                    0,
                 )
+
+                # Adaptive refresh:
+                #
+                # Active download -> 1 second
+                # Metadata         -> 3 seconds
+                # Stopped/paused   -> 10 seconds
+                # Completed        -> 5 minutes
+
+                if state in (
+                    "downloading",
+                    "forcedDL",
+                    "queuedDL",
+                    "stalledDL",
+                    "checkingDL",
+                ):
+                    refresh_interval = 1
+
+                elif state == "metaDL":
+                    refresh_interval = 3
+
+                elif progress >= 1:
+                    refresh_interval = 300
+
+                else:
+                    refresh_interval = 10
+
+                keyboard = InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                "⬅️ Back",
+                                callback_data=f"back:{torrent_hash}",
+                            )
+                        ]
+                    ]
+                )
+
+                keyboard_key = str(
+                    keyboard.to_dict()
+                )
+
+                # Only edit Telegram when something actually changed.
+                if (
+                    text != last_text
+                    or keyboard_key != last_keyboard
+                ):
+                    await application.bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text=text,
+                        parse_mode="HTML",
+                        reply_markup=keyboard,
+                    )
+
+                    last_text = text
+                    last_keyboard = keyboard_key
+
+                await asyncio.sleep(
+                    refresh_interval
+                )
+
+            except RetryAfter as error:
+                set_telegram_rate_limit(
+                    error.retry_after
+                )
+
+                print(
+                    f"🛑 File Progress Telegram flood control: "
+                    f"retry after {error.retry_after}s. "
+                    f"Stopping refresh for message {message_id}."
+                )
+
+                return
+
+            except Exception as error:
+                if "Message is not modified" not in str(error):
+                    print(
+                        f"⚠️ File Progress refresh error: "
+                        f"{error}"
+                    )
+
+                # Never retry Telegram/qB errors in a tight loop.
+                await asyncio.sleep(5)
 
     except asyncio.CancelledError:
-        print(
-            f"🛑 File Progress task cancelled: "
-            f"message={message_id}"
-        )
         raise
 
     finally:
-        if FILE_PROGRESS_TASKS.get(key) is asyncio.current_task():
-            FILE_PROGRESS_TASKS.pop(key, None)
+        if (
+            FILE_PROGRESS_TASKS.get(key)
+            is asyncio.current_task()
+        ):
+            FILE_PROGRESS_TASKS.pop(
+                key,
+                None,
+            )
 
 async def build_file_progress(qb, torrent_hash):
     torrent = get_torrent(qb, torrent_hash)
@@ -845,10 +998,10 @@ async def build_file_progress(qb, torrent_hash):
 
 
 async def build_torrent_status(qb):
-    torrents = qb.torrents_info()
+    torrents = qb.torrents_info() or []
 
     if not torrents:
-        return "📭 No torrents found.", None
+        return "📭 No torrents found.", []
 
     messages = []
 
@@ -974,6 +1127,27 @@ def list_keyboard(torrents):
     return InlineKeyboardMarkup(keyboard)
 
 
+def stop_torrent_list_refreshes():
+    """
+    Stop all active torrent-list refresh tasks.
+
+    Used by the completion watcher so that a completed torrent
+    does not keep causing Telegram list edits while completion
+    links are being generated.
+    """
+    stopped = 0
+
+    for key, task in list(LIST_REFRESH_TASKS.items()):
+        if task and not task.done():
+            task.cancel()
+            stopped += 1
+
+    if stopped:
+        print(
+            f"🛑 Stopped {stopped} torrent-list refresh task(s)"
+        )
+
+
 async def refresh_torrent_list_message(
     application,
     chat_id,
@@ -982,85 +1156,146 @@ async def refresh_torrent_list_message(
     key = f"{chat_id}:{message_id}"
 
     print(
-        f"🔄 Torrent list refresh started: message={message_id}"
+        f"🔄 Torrent list refresh started: "
+        f"message={message_id}"
     )
+
+    last_rendered = None
 
     try:
         while True:
-            await asyncio.sleep(1)
 
             if SCREEN_STATES.get(key) != "list":
                 return
 
-            if LIST_REFRESH_TASKS.get(key) is not asyncio.current_task():
+            if (
+                LIST_REFRESH_TASKS.get(key)
+                is not asyncio.current_task()
+            ):
                 return
+
+            if telegram_rate_limited():
+                print(
+                    f"🛑 Torrent list refresh blocked by "
+                    f"global Telegram flood protection: "
+                    f"message={message_id}"
+                )
+                return
+
+            refresh_interval = 10
 
             try:
                 qb = get_qbittorrent()
-                status_text, torrents = await build_torrent_status(qb)
+
+                status_text, torrents = (
+                    await build_torrent_status(qb)
+                )
 
                 if SCREEN_STATES.get(key) != "list":
                     return
 
-                await application.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    text=status_text,
-                    parse_mode="HTML",
-                    reply_markup=list_keyboard(torrents),
+                # Adaptive refresh interval.
+
+                if not torrents:
+                    refresh_interval = 300
+
+                elif any(
+                    getattr(t, "state", "") in (
+                        "downloading",
+                        "forcedDL",
+                        "queuedDL",
+                        "stalledDL",
+                        "checkingDL",
+                    )
+                    for t in torrents
+                ):
+                    refresh_interval = 1
+
+                elif any(
+                    getattr(t, "state", "") == "metaDL"
+                    for t in torrents
+                ):
+                    refresh_interval = 3
+
+                elif all(
+                    getattr(t, "progress", 0) >= 1
+                    for t in torrents
+                ):
+                    refresh_interval = 300
+
+                else:
+                    refresh_interval = 10
+
+                rendered = (
+                    status_text,
+                    tuple(
+                        (
+                            getattr(t, "hash", ""),
+                            getattr(t, "name", ""),
+                            getattr(t, "progress", 0),
+                            getattr(t, "state", ""),
+                            getattr(t, "size", 0),
+                            getattr(t, "dlspeed", 0),
+                        )
+                        for t in torrents
+                    ),
                 )
 
+                # Only call Telegram when the visible state changed.
+                if rendered != last_rendered:
+
+                    await application.bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text=status_text,
+                        parse_mode="HTML",
+                        reply_markup=list_keyboard(torrents),
+                    )
+
+                    last_rendered = rendered
+
+                # Always sleep, including when nothing changed.
+                await asyncio.sleep(
+                    refresh_interval
+                )
+
+            except RetryAfter as error:
+                set_telegram_rate_limit(
+                    error.retry_after
+                )
+
+                print(
+                    f"🛑 Telegram flood control: "
+                    f"retry after {error.retry_after}s. "
+                    f"Stopping torrent list refresh for "
+                    f"message {message_id}."
+                )
+
+                return
+
             except Exception as error:
+
                 if "Message is not modified" not in str(error):
-                    print(f"⚠️ Torrent list refresh error: {error}")
+                    print(
+                        f"⚠️ Torrent list refresh error: "
+                        f"{error}"
+                    )
+
+                # Prevent tight exception loops.
+                await asyncio.sleep(5)
 
     except asyncio.CancelledError:
         raise
 
     finally:
-        if LIST_REFRESH_TASKS.get(key) is asyncio.current_task():
-            LIST_REFRESH_TASKS.pop(key, None)
-
-
-def start_torrent_list_refresh(
-    application,
-    chat_id,
-    message_id,
-    allow_completed=False,
-):
-    key = f"{chat_id}:{message_id}"
-    old_task = LIST_REFRESH_TASKS.pop(key, None)
-
-    if old_task is not None:
-        old_task.cancel()
-
-    SCREEN_STATES[key] = "list"
-
-    if key in COMPLETED_LIST_KEYS and not allow_completed:
-        return
-
-    if allow_completed:
-        COMPLETED_LIST_KEYS.discard(key)
-
-    LIST_REFRESH_TASKS[key] = asyncio.create_task(
-        refresh_torrent_list_message(
-            application,
-            chat_id,
-            message_id,
-        )
-    )
-
-
-def stop_torrent_list_refreshes():
-    for key, task in list(LIST_REFRESH_TASKS.items()):
-        SCREEN_STATES[key] = "completed"
-        COMPLETED_LIST_KEYS.add(key)
-        task.cancel()
-
-    LIST_REFRESH_TASKS.clear()
-
-
-
+        if (
+            LIST_REFRESH_TASKS.get(key)
+            is asyncio.current_task()
+        ):
+            LIST_REFRESH_TASKS.pop(
+                key,
+                None,
+            )
 
 async def list_torrents(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -1976,6 +2211,7 @@ async def completion_watcher(application):
     The completion state is persisted in .completed_torrents.json
     so the same torrent is not announced repeatedly after restart.
     """
+
     print("🔎 Completion watcher started...")
 
     while True:
@@ -1983,7 +2219,7 @@ async def completion_watcher(application):
             await asyncio.sleep(5)
 
             qb = get_qbittorrent()
-            torrents = qb.torrents_info()
+            torrents = qb.torrents_info() or []
 
             for torrent in torrents:
                 torrent_hash = torrent.hash
@@ -1991,49 +2227,97 @@ async def completion_watcher(application):
                 if torrent.progress < 1:
                     continue
 
-                # Already announced.
+                # Already successfully announced.
                 if torrent_hash in COMPLETED_TORRENTS:
                     continue
 
-                print(f"🎉 Torrent completed: {torrent.name}")
+                # Already being processed by another watcher cycle.
+                if torrent_hash in COMPLETION_PROCESSING:
+                    continue
+
+                COMPLETION_PROCESSING.add(torrent_hash)
+
+                print(
+                    f"🎉 Torrent completed: {torrent.name}"
+                )
+
+                # Stop active torrent-list refresh tasks.
                 stop_torrent_list_refreshes()
 
                 try:
-                    files = qb.torrents_files(torrent_hash=torrent_hash)
+                    files = qb.torrents_files(
+                        torrent_hash=torrent_hash
+                    )
 
                     if not files:
-                        print(f"⚠️ No files found for: {torrent.name}")
-                        COMPLETED_TORRENTS.add(torrent_hash)
-                        save_completed_torrents(COMPLETED_TORRENTS)
+                        print(
+                            f"⚠️ No files found for: "
+                            f"{torrent.name}"
+                        )
+
+                        COMPLETED_TORRENTS.add(
+                            torrent_hash
+                        )
+
+                        save_completed_torrents(
+                            COMPLETED_TORRENTS
+                        )
+
                         continue
 
                     links = []
 
                     for file in files:
-                        if int(getattr(file, "priority", 0) or 0) <= 0:
+
+                        if int(
+                            getattr(
+                                file,
+                                "priority",
+                                0,
+                            ) or 0
+                        ) <= 0:
                             continue
 
-                        file_name = getattr(file, "name", None)
+                        file_name = getattr(
+                            file,
+                            "name",
+                            None,
+                        )
 
                         if not file_name:
                             continue
 
-                        # qBittorrent's content path is normally under
-                        # /downloads for this setup.
-                        file_path = (DOWNLOAD_DIR / file_name).resolve()
+                        # qBittorrent's content path is normally
+                        # under /downloads for this setup.
+                        file_path = (
+                            DOWNLOAD_DIR / file_name
+                        ).resolve()
 
                         try:
-                            file_path.relative_to(DOWNLOAD_DIR)
+                            file_path.relative_to(
+                                DOWNLOAD_DIR
+                            )
+
                         except ValueError:
-                            print(f"⚠️ Skipping unsafe path: {file_path}")
+                            print(
+                                f"⚠️ Skipping unsafe path: "
+                                f"{file_path}"
+                            )
                             continue
 
                         if not file_path.is_file():
-                            print(f"⚠️ File not found yet: {file_path}")
+                            print(
+                                f"⚠️ File not found yet: "
+                                f"{file_path}"
+                            )
                             continue
 
                         token = secrets.token_urlsafe(24)
-                        save_token(token, file_path)
+
+                        save_token(
+                            token,
+                            file_path
+                        )
 
                         url = (
                             f"{BASE_URL}/files/"
@@ -2041,10 +2325,19 @@ async def completion_watcher(application):
                             f"{quote(file_path.name)}"
                         )
 
-                        links.append((file_path.name, url))
+                        links.append(
+                            (
+                                file_path.name,
+                                url,
+                            )
+                        )
 
                     if not links:
-                        print(f"⚠️ No completed files available: {torrent.name}")
+                        print(
+                            f"⚠️ No completed files available: "
+                            f"{torrent.name}"
+                        )
+
                         continue
 
                     text = (
@@ -2052,39 +2345,92 @@ async def completion_watcher(application):
                         f"📦 <b>{torrent.name}</b>\n\n"
                     )
 
-                    for index, (name, url) in enumerate(links, 1):
+                    for index, (name, url) in enumerate(
+                        links,
+                        1,
+                    ):
                         text += (
                             f"📄 <b>{name}</b>\n"
                             f"🔗 {url}\n\n"
                         )
 
-                    # Send to the authorized user.
-                    await application.bot.send_message(
-                        chat_id=ALLOWED_USER_ID,
-                        text=text,
-                        parse_mode="HTML",
-                        disable_web_page_preview=True,
+                    # Protect against Telegram flood control.
+                    if telegram_rate_limited():
+                        print(
+                            "🛑 Completion notification "
+                            "blocked by global Telegram "
+                            "flood protection."
+                        )
+
+                        continue
+
+                    try:
+                        await application.bot.send_message(
+                            chat_id=ALLOWED_USER_ID,
+                            text=text,
+                            parse_mode="HTML",
+                            disable_web_page_preview=True,
+                        )
+
+                    except RetryAfter as error:
+                        set_telegram_rate_limit(
+                            error.retry_after
+                        )
+
+                        print(
+                            f"🛑 Completion notification hit "
+                            f"Telegram flood control: "
+                            f"retry after {error.retry_after}s."
+                        )
+
+                        continue
+
+                    COMPLETED_TORRENTS.add(
+                        torrent_hash
                     )
 
-                    COMPLETED_TORRENTS.add(torrent_hash)
-                    save_completed_torrents(COMPLETED_TORRENTS)
+                    save_completed_torrents(
+                        COMPLETED_TORRENTS
+                    )
 
-                    print(f"✅ Completion notification sent: {torrent.name}")
+                    print(
+                        f"✅ Completion notification sent: "
+                        f"{torrent.name}"
+                    )
 
-                except Exception as e:
+                except RetryAfter as error:
+                    set_telegram_rate_limit(
+                        error.retry_after
+                    )
+
+                    print(
+                        f"🛑 Completion handler hit Telegram "
+                        f"flood control: retry after "
+                        f"{error.retry_after}s."
+                    )
+
+                except Exception as error:
                     print(
                         f"❌ Completion handling error "
-                        f"for {torrent.name}: {e}"
+                        f"for {torrent.name}: {error}"
+                    )
+
+                finally:
+                    COMPLETION_PROCESSING.discard(
+                        torrent_hash
                     )
 
         except asyncio.CancelledError:
-            print("Completion watcher stopped.")
-            return
+            raise
 
-        except Exception as e:
-            print(f"Completion watcher error: {e}")
+        except Exception as error:
+            print(
+                f"Completion watcher error: {error}"
+            )
 
-
+            # Never let an unexpected watcher error create
+            # a tight retry loop.
+            await asyncio.sleep(5)
 
 async def setup_bot_commands(application):
     commands = [
